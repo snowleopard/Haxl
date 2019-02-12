@@ -343,6 +343,17 @@ getIVarApply (IVar !ref) a = GenHaxl $ \_env -> do
     IVarEmpty _ ->
       return (Blocked (IVar ref) (Cont (getIVarApply (IVar ref) a)))
 
+-- Just a specialised version of getIVar, for efficiency in 'select'.
+getIVarApply2 :: (a -> b) -> IVar u (Either a b) -> GenHaxl u b
+getIVarApply2 f (IVar !ref) = GenHaxl $ \_env -> do
+  e <- readIORef ref
+  case e of
+    IVarFull (Ok a) -> return (Done (either f id a))
+    IVarFull (ThrowHaxl e) -> return (Throw e)
+    IVarFull (ThrowIO e) -> throwIO e
+    IVarEmpty _ ->
+      return (Blocked (IVar ref) (Cont (getIVarApply2 f (IVar ref))))
+
 putIVar :: IVar u a -> ResultVal a -> Env u -> IO ()
 putIVar (IVar ref) a Env{..} = do
   e <- readIORef ref
@@ -538,6 +549,12 @@ toHaxlFmap f (m :>>= k) = toHaxlBind m (k >=> return . f)
 toHaxlFmap f (Cont haxl) = f <$> haxl
 toHaxlFmap f (g :<$> x) = toHaxlFmap (f . g) x
 
+-- -----------------------------------------------------------------------------
+-- Selective applicative functors
+
+-- See: https://github.com/snowleopard/selective
+class Applicative f => Selective f where
+    select :: f (Either a b) -> f (a -> b) -> f b
 
 -- -----------------------------------------------------------------------------
 -- Monad/Applicative instances
@@ -598,6 +615,35 @@ instance Applicative (GenHaxl u) where
                   let cont = acont :>>= \a -> getIVarApply i a
                   return (Blocked ivar2 cont)
 
+instance Selective (GenHaxl u) where
+  select (GenHaxl xx) (GenHaxl ff) = GenHaxl $ \env -> do
+    xr <- xx env
+    case xr of
+      Done (Right b) -> trace_ "Done:Right" $ return (Done b) -- skip ff
+      Done (Left  a) -> trace_ "Done:Left"  $ unHaxl (GenHaxl ff <*> pure a) env
+
+      Throw e -> trace_ "Throw" $ return (Throw e)
+
+      Blocked ivar1 xcont -> do
+        fr <- ff env
+        case fr of
+          Done f -> trace_ "Blocked/Done" $
+            return (Blocked ivar1 (either f id :<$> xcont))
+          Throw e -> trace_ "Blocked/Throw" $
+             return (Blocked ivar1 (xcont :>>= (\_ -> throw e)))
+          Blocked ivar2 fcont -> trace_ "Blocked/Blocked" $ do
+             -- Note [TODO]
+              if speculative env /= 0
+                then
+                  return (Blocked ivar1
+                            (Cont (select (toHaxl xcont) (toHaxl fcont))))
+                else do
+                  i <- newIVar
+                  addJob env (toHaxl xcont) i ivar1 -- TODO: mark as optional
+                  let cont = fcont :>>= \f -> getIVarApply2 f i
+                  return (Blocked ivar2 cont)
+
+
 -- Note [Blocked/Blocked]
 --
 -- This is the tricky case: we're blocked on both sides of the <*>.
@@ -610,7 +656,7 @@ instance Applicative (GenHaxl u) where
 --
 -- becomes
 --
---   (ff >>= putIVar i) <*> (a <- aa; f <- getIVar i; return (f a)
+--   (ff >>= putIVar i) <*> (do a <- aa; f <- getIVar i; return (f a))
 --
 -- where the IVar i is a new synchronisation point.  If the right side
 -- gets to the `getIVar` first, it will block until the left side has
@@ -618,7 +664,7 @@ instance Applicative (GenHaxl u) where
 --
 -- We can also do it the other way around:
 --
---   (do ff <- f; getIVar i; return (ff a)) <*> (a >>= putIVar i)
+--   (do ff <- f; getIVar i; return (ff a)) <*> (aa >>= putIVar i)
 --
 -- The first was slightly faster according to tests/MonadBench.hs.
 
