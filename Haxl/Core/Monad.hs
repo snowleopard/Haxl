@@ -343,17 +343,6 @@ getIVarApply (IVar !ref) a = GenHaxl $ \_env -> do
     IVarEmpty _ ->
       return (Blocked (IVar ref) (Cont (getIVarApply (IVar ref) a)))
 
--- Just a specialised version of getIVar, for efficiency in 'select'.
-getIVarApply2 :: (a -> b) -> IVar u (Either a b) -> GenHaxl u b
-getIVarApply2 f (IVar !ref) = GenHaxl $ \_env -> do
-  e <- readIORef ref
-  case e of
-    IVarFull (Ok a) -> return (Done (either f id a))
-    IVarFull (ThrowHaxl e) -> return (Throw e)
-    IVarFull (ThrowIO e) -> throwIO e
-    IVarEmpty _ ->
-      return (Blocked (IVar ref) (Cont (getIVarApply2 f (IVar ref))))
-
 putIVar :: IVar u a -> ResultVal a -> Env u -> IO ()
 putIVar (IVar ref) a Env{..} = do
   e <- readIORef ref
@@ -553,8 +542,18 @@ toHaxlFmap f (g :<$> x) = toHaxlFmap (f . g) x
 -- Selective applicative functors
 
 -- See: https://github.com/snowleopard/selective
+-- | Selective applicative functors. You can think of 'select' as a selective
+-- function application: when given a value of type @Left a@, you __must apply__
+-- the given function, but when given a @Right b@, you __may skip__ the function
+-- and associated effects, and simply return the @b@.
 class Applicative f => Selective f where
     select :: f (Either a b) -> f (a -> b) -> f b
+
+-- | We can write a function with the type signature of 'select' using the
+-- 'Applicative' type class, but it will always execute the effects associated
+-- with the second argument, hence being potentially less efficient.
+selectA :: Applicative f => f (Either a b) -> f (a -> b) -> f b
+selectA x f = (\e f -> either f id e) <$> x <*> f
 
 -- -----------------------------------------------------------------------------
 -- Monad/Applicative instances
@@ -604,7 +603,7 @@ instance Applicative (GenHaxl u) where
            Throw e -> trace_ "Blocked/Throw" $
              return (Blocked ivar1 (fcont :>>= (\_ -> throw e)))
            Blocked ivar2 acont -> trace_ "Blocked/Blocked" $ do
-             -- Note [Blocked/Blocked]
+              -- Note [Blocked/Blocked]
               if speculative env /= 0
                 then
                   return (Blocked ivar1
@@ -614,35 +613,6 @@ instance Applicative (GenHaxl u) where
                   addJob env (toHaxl fcont) i ivar1
                   let cont = acont :>>= \a -> getIVarApply i a
                   return (Blocked ivar2 cont)
-
-instance Selective (GenHaxl u) where
-  select (GenHaxl xx) (GenHaxl ff) = GenHaxl $ \env -> do
-    xr <- xx env
-    case xr of
-      Done (Right b) -> trace_ "Done:Right" $ return (Done b) -- skip ff
-      Done (Left  a) -> trace_ "Done:Left"  $ unHaxl (GenHaxl ff <*> pure a) env
-
-      Throw e -> trace_ "Throw" $ return (Throw e)
-
-      Blocked ivar1 xcont -> do
-        fr <- ff env
-        case fr of
-          Done f -> trace_ "Blocked/Done" $
-            return (Blocked ivar1 (either f id :<$> xcont))
-          Throw e -> trace_ "Blocked/Throw" $
-             return (Blocked ivar1 (xcont :>>= (\_ -> throw e)))
-          Blocked ivar2 fcont -> trace_ "Blocked/Blocked" $ do
-             -- Note [TODO]
-              if speculative env /= 0
-                then
-                  return (Blocked ivar1
-                            (Cont (select (toHaxl xcont) (toHaxl fcont))))
-                else do
-                  i <- newIVar
-                  addJob env (toHaxl xcont) i ivar1 -- TODO: mark as optional
-                  let cont = fcont :>>= \f -> getIVarApply2 f i
-                  return (Blocked ivar2 cont)
-
 
 -- Note [Blocked/Blocked]
 --
@@ -668,7 +638,68 @@ instance Selective (GenHaxl u) where
 --
 -- The first was slightly faster according to tests/MonadBench.hs.
 
+instance Selective (GenHaxl u) where
+  select (GenHaxl xx) (GenHaxl ff) = GenHaxl $ \env -> do
+    xr <- xx env
+    case xr of
+      Done (Right b) -> trace_ "Done/Right" $ return (Done b) -- skip ff
+      Done (Left  a) -> trace_ "Done/Left"  $ unHaxl (GenHaxl ff <*> pure a) env
 
+      Throw e -> trace_ "Throw" $ return (Throw e)
+
+      Blocked ivar1 xcont -> do
+        fr <- ff env
+        case fr of
+          Done f -> trace_ "Blocked/Done" $
+            return (Blocked ivar1 (either f id :<$> xcont))
+          Throw e -> trace_ "Blocked/Throw" $
+             return (Blocked ivar1 (xcont :>>= (\_ -> throw e)))
+          Blocked _ fcont -> trace_ "Blocked/Blocked" $ do
+              -- Note [TODO]
+              if speculative env /= 0 -- Why do we have this suboptimal branch?
+                then
+                  return (Blocked ivar1
+                            (Cont (select (toHaxl xcont) (toHaxl fcont))))
+                else do
+                  let res = fmap rightToMaybe (GenHaxl xx)    -- hoping for Right
+                                   `pOrElse`
+                            selectA (GenHaxl xx) (GenHaxl ff) -- fallback to Left
+                  unHaxl res env
+
+rightToMaybe :: Either a b -> Maybe b
+rightToMaybe (Left  _) = Nothing
+rightToMaybe (Right b) = Just b
+
+
+-- | Given two Haxl computations, evaluate them in parallel. If the first one
+-- finishes with @Nothing@, use the result produced by the second argument.
+-- Otherwise, if the first one finishes with @Just result@, the @result@ is
+-- returned immediately, and the other one is not evaluated any further.
+--
+-- WARNING: exceptions may be unpredictable when using 'pOrElse'. If the first
+-- argument returns @Just result@ before the other completes, then 'pOrElse'
+-- returns the @result@ immediately, ignoring a possible exception that the
+-- other argument may have produced if it had been allowed to complete.
+pOrElse :: GenHaxl u (Maybe a) -> GenHaxl u a -> GenHaxl u a
+pOrElse (GenHaxl ma) (GenHaxl a) = GenHaxl $ \env@Env{..} -> do
+  let !senv = speculate env
+  rma <- ma env -- not speculative, since we know that all effects on the left
+  case rma of
+    Done (Just a) -> return (Done a)
+    Done Nothing  -> a env  -- not speculative
+    Throw e -> return (Throw e)
+    Blocked ima ma' -> do
+      ra <- a senv -- speculative
+      case ra of
+        Done  _ -> return ra
+        Throw _ -> return ra
+        Blocked _ a' -> return (Blocked ima (Cont (toHaxl ma' `pOrElse` toHaxl a')))
+          -- Note [pOrElse Blocked/Blocked]
+          -- This will only wake up when ima is filled, which
+          -- is whatever the left side (ma) was waiting for. Unlike in the case
+          -- of 'pOr' (see Note [pOr Blocked/Blocked]), this *is* optimal since
+          -- the semantics of 'pOrElse' is that the left side always needs to
+          -- be completed.
 
 -- -----------------------------------------------------------------------------
 -- Env utils
