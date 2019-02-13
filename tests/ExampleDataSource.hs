@@ -132,21 +132,21 @@ exampleFetch _state _flags _user = SyncFetch $ mapM_ fetch1
   -- details.
 
 fetch1 :: BlockedFetch ExampleReq -> IO ()
-fetch1 (BlockedFetch (CountAardvarks "BANG") _) =
+fetch1 (BlockedFetch _necessary (CountAardvarks "BANG") _) =
   error "BANG"  -- data sources should not throw exceptions, but in
                 -- the event that one does, the framework will
                 -- propagate the exception to the call site of
                 -- dataFetch.
-fetch1 (BlockedFetch (CountAardvarks "BANG2") m) = do
+fetch1 (BlockedFetch _necessary (CountAardvarks "BANG2") m) = do
   putSuccess m 1
   error "BANG2" -- the exception is propagated even if we have already
                 -- put the result with putSuccess
-fetch1 (BlockedFetch (CountAardvarks "BANG3") _) = do
+fetch1 (BlockedFetch _necessary (CountAardvarks "BANG3") _) = do
   hPutStr stderr "BANG3"
   killThread =<< myThreadId -- an asynchronous exception
-fetch1 (BlockedFetch (CountAardvarks str) m) =
+fetch1 (BlockedFetch _necessary (CountAardvarks str) m) =
   putSuccess m (length (filter (== 'a') str))
-fetch1 (BlockedFetch (ListWombats a) r) =
+fetch1 (BlockedFetch _necessary (ListWombats a) r) =
   if a > 999999
     then putFailure r $ FetchError "too large"
     else putSuccess r $ take (fromIntegral a) [1..]

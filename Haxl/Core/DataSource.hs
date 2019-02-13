@@ -26,6 +26,7 @@ module Haxl.Core.DataSource
   , DataSourceName(..)
   , Request
   , BlockedFetch(..)
+  , Necessary (..)
   , PerformFetch(..)
   , SchedulerHint(..)
 
@@ -132,7 +133,7 @@ data SchedulerHint (req :: * -> *)
 -- | A data source can fetch data in one of four ways.
 --
 data PerformFetch req
-  = SyncFetch  ([BlockedFetch req] -> IO ())
+  = SyncFetch  ([BlockedFetch req] -> IO ()) -- IO [BlockedFetch req]
     -- ^ Fully synchronous, returns only when all the data is fetched.
     -- See 'syncFetch' for an example.
   | AsyncFetch ([BlockedFetch req] -> IO () -> IO ())
@@ -176,8 +177,10 @@ data PerformFetch req
 -- matches the type parameter of the 'ResultVar', so it will let us take the
 -- result of the request and store it in the 'ResultVar'.
 --
-data BlockedFetch r = forall a. BlockedFetch (r a) (ResultVar a)
+data BlockedFetch r = forall a. BlockedFetch Necessary (r a) (ResultVar a)
 
+-- | Tells whether the request to fetch is necessary or speculative.
+data Necessary = Necessary | Speculative deriving Eq
 
 -- -----------------------------------------------------------------------------
 -- ResultVar
@@ -221,7 +224,7 @@ putResultFromChildThread (ResultVar io) res =  io res True
 
 -- | Function for easily setting a fetch to a particular exception
 setError :: (Exception e) => (forall a. r a -> e) -> BlockedFetch r -> IO ()
-setError e (BlockedFetch req m) = putFailure m (e req)
+setError e (BlockedFetch _ req m) = putFailure m (e req)
 
 except :: (Exception e) => e -> Either SomeException a
 except = Left . toException
@@ -386,5 +389,5 @@ submitFetch
   -> (forall a. service -> request a -> IO (IO (Either SomeException a)))
   -> BlockedFetch request
   -> IO (IO ())
-submitFetch service fetch (BlockedFetch request result)
+submitFetch service fetch (BlockedFetch _ request result)
   = (putResult result =<<) <$> fetch service request

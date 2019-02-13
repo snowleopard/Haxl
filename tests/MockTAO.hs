@@ -64,7 +64,7 @@ initGlobalState :: Bool -> IO (State TAOReq)
 initGlobalState future = return TAOState { future=future }
 
 doFetch :: BlockedFetch TAOReq -> IO ()
-doFetch (BlockedFetch req@(AssocRangeId2s a b) r) =
+doFetch (BlockedFetch _ req@(AssocRangeId2s a b) r) =
   case Map.lookup (a, b) assocs of
     Nothing -> putFailure r . NotFound . Text.pack $ show req
     Just result -> putSuccess r result

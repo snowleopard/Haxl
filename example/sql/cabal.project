@@ -1,0 +1,2 @@
+packages: ./haxl-example.cabal
+packages: ./../../haxl.cabal

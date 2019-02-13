@@ -45,6 +45,11 @@ module Haxl.Core.Monad
   , Cont(..)
   , toHaxl
 
+    -- * Selective functors
+  , Selective (..)
+  , branch
+  , ifS
+
     -- * IVar
   , IVar(..)
   , IVarContents(..)
@@ -115,6 +120,7 @@ import Control.Applicative hiding (Const)
 #if __GLASGOW_HASKELL__ < 706
 import Prelude hiding (catch)
 #endif
+import Data.Bool
 import Data.IORef
 import Data.Int
 import GHC.Exts (IsString(..))
@@ -128,11 +134,12 @@ import Debug.Trace (traceEventIO)
 #ifdef PROFILING
 import GHC.Stack
 #endif
+-- import qualified Debug.Trace
 
 
 trace_ :: String -> a -> a
 trace_ _ = id
---trace_ = Debug.Trace.trace
+-- trace_ = Debug.Trace.trace
 
 -- -----------------------------------------------------------------------------
 -- The environment
@@ -549,11 +556,32 @@ toHaxlFmap f (g :<$> x) = toHaxlFmap (f . g) x
 class Applicative f => Selective f where
     select :: f (Either a b) -> f (a -> b) -> f b
 
+-- | An operator alias for 'select', which is sometimes convenient. It tries to
+-- follow the notational convention for 'Applicative' operators. The angle
+-- bracket pointing to the left means we always use the corresponding value.
+-- The value on the right, however, may be skipped, hence the question mark.
+(<*?) :: Selective f => f (Either a b) -> f (a -> b) -> f b
+(<*?) = select
+
+infixl 4 <*?
+
 -- | We can write a function with the type signature of 'select' using the
 -- 'Applicative' type class, but it will always execute the effects associated
 -- with the second argument, hence being potentially less efficient.
 selectA :: Applicative f => f (Either a b) -> f (a -> b) -> f b
 selectA x f = (\e f -> either f id e) <$> x <*> f
+
+-- | The 'branch' function is a natural generalisation of 'select': instead of
+-- skipping an unnecessary effect, it chooses which of the two given effectful
+-- functions to apply to a given argument; the other effect is unnecessary. It
+-- is possible to implement 'branch' in terms of 'select', which is a good
+-- puzzle (give it a try!).
+branch :: Selective f => f (Either a b) -> f (a -> c) -> f (b -> c) -> f c
+branch x l r = fmap (fmap Left) x <*? fmap (fmap Right) l <*? r
+
+-- | Branch on a Boolean value, skipping unnecessary effects.
+ifS :: Selective f => f Bool -> f a -> f a -> f a
+ifS i t e = branch (bool (Right ()) (Left ()) <$> i) (const <$> t) (const <$> e)
 
 -- -----------------------------------------------------------------------------
 -- Monad/Applicative instances
@@ -590,19 +618,19 @@ instance Applicative (GenHaxl u) where
       Done f -> do
         ra <- aa env
         case ra of
-          Done a -> trace_ "Done/Done" $ return (Done (f a))
-          Throw e -> trace_ "Done/Throw" $ return (Throw e)
-          Blocked ivar fcont -> trace_ "Done/Blocked" $
+          Done a -> trace_ "A/Done/Done" $ return (Done (f a))
+          Throw e -> trace_ "A/Done/Throw" $ return (Throw e)
+          Blocked ivar fcont -> trace_ "A/Done/Blocked" $
             return (Blocked ivar (f :<$> fcont))
-      Throw e -> trace_ "Throw" $ return (Throw e)
+      Throw e -> trace_ "A/Throw" $ return (Throw e)
       Blocked ivar1 fcont -> do
          ra <- aa env
          case ra of
-           Done a -> trace_ "Blocked/Done" $
+           Done a -> trace_ "A/Blocked/Done" $
              return (Blocked ivar1 (($ a) :<$> fcont))
-           Throw e -> trace_ "Blocked/Throw" $
+           Throw e -> trace_ "A/Blocked/Throw" $
              return (Blocked ivar1 (fcont :>>= (\_ -> throw e)))
-           Blocked ivar2 acont -> trace_ "Blocked/Blocked" $ do
+           Blocked ivar2 acont -> trace_ "A/Blocked/Blocked" $ do
               -- Note [Blocked/Blocked]
               if speculative env /= 0
                 then
@@ -642,25 +670,25 @@ instance Selective (GenHaxl u) where
   select (GenHaxl xx) (GenHaxl ff) = GenHaxl $ \env -> do
     xr <- xx env
     case xr of
-      Done (Right b) -> trace_ "Done/Right" $ return (Done b) -- skip ff
-      Done (Left  a) -> trace_ "Done/Left"  $ unHaxl (GenHaxl ff <*> pure a) env
+      Done (Right b) -> trace_ "S/Done/Right" $ return (Done b) -- skip ff
+      Done (Left  a) -> trace_ "S/Done/Left"  $ unHaxl (GenHaxl ff <*> pure a) env
 
       Throw e -> trace_ "Throw" $ return (Throw e)
 
       Blocked ivar1 xcont -> do
         fr <- ff env
         case fr of
-          Done f -> trace_ "Blocked/Done" $
+          Done f -> trace_ "S/Blocked/Done" $
             return (Blocked ivar1 (either f id :<$> xcont))
-          Throw e -> trace_ "Blocked/Throw" $
+          Throw e -> trace_ "S/Blocked/Throw" $
              return (Blocked ivar1 (xcont :>>= (\_ -> throw e)))
-          Blocked _ fcont -> trace_ "Blocked/Blocked" $ do
+          Blocked _ _fcont -> trace_ "S/Blocked/Blocked" $ do
               -- Note [TODO]
-              if speculative env /= 0 -- Why do we have this suboptimal branch?
-                then
-                  return (Blocked ivar1
-                            (Cont (select (toHaxl xcont) (toHaxl fcont))))
-                else do
+            --   if speculative env /= 0 -- Why do we have this suboptimal branch?
+            --     then
+            --       return (Blocked ivar1
+            --                 (Cont (select (toHaxl xcont) (toHaxl fcont))))
+            --     else do
                   let res = fmap rightToMaybe (GenHaxl xx)    -- hoping for Right
                                    `pOrElse`
                             selectA (GenHaxl xx) (GenHaxl ff) -- fallback to Left
@@ -669,7 +697,6 @@ instance Selective (GenHaxl u) where
 rightToMaybe :: Either a b -> Maybe b
 rightToMaybe (Left  _) = Nothing
 rightToMaybe (Right b) = Just b
-
 
 -- | Given two Haxl computations, evaluate them in parallel. If the first one
 -- finishes with @Nothing@, use the result produced by the second argument.

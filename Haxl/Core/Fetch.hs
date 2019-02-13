@@ -177,6 +177,7 @@ dataFetchWithInsert showFn insertFn req =
   -- First, check the cache
   res <- cachedWithInsert showFn insertFn env req
   ifProfiling flags $ addProfileFetch env req
+  let necessary = if speculative == 0 then Necessary else Speculative
   case res of
     -- This request has not been seen before
     Uncached rvar ivar -> do
@@ -188,13 +189,13 @@ dataFetchWithInsert showFn insertFn req =
       case schedulerHint userEnv :: SchedulerHint r of
         SubmitImmediately -> do
           (_,ios) <- performFetches 0 env
-            [BlockedFetches [BlockedFetch req rvar]]
+            [BlockedFetches [BlockedFetch necessary req rvar]]
           when (not (null ios)) $
             error "bad data source:SubmitImmediately but returns FutureFetch"
         TryToBatch ->
           -- add the request to the RequestStore and continue
           modifyIORef' reqStoreRef $ \bs ->
-            addRequest (BlockedFetch req rvar) bs
+            addRequest (BlockedFetch necessary req rvar) bs
       --
       return $ Blocked ivar (Cont (getIVar ivar))
 
@@ -227,9 +228,10 @@ uncachedRequest req = do
     then dataFetch req
     else GenHaxl $ \Env{..} -> do
       ivar <- newIVar
+      let necessary = if speculative == 0 then Necessary else Speculative
       let !rvar = stdResultVar ivar completions
       modifyIORef' reqStoreRef $ \bs ->
-        addRequest (BlockedFetch req rvar) bs
+        addRequest (BlockedFetch necessary req rvar) bs
       return $ Blocked ivar (Cont (getIVar ivar))
 
 
@@ -334,7 +336,7 @@ performFetches n env@Env{flags=f, statsRef=sref} jobs = do
 
   ifTrace f 3 $
     forM_ jobs $ \(BlockedFetches reqs) ->
-      forM_ reqs $ \(BlockedFetch r _) -> putStrLn (showp r)
+      forM_ reqs $ \(BlockedFetch _ r _) -> putStrLn (showp r)
 
   let
     applyFetch i (BlockedFetches (reqs :: [BlockedFetch r])) =
@@ -408,7 +410,7 @@ wrapFetchInCatch reqs fetch =
 
     -- Set the exception even if the request already had a result.
     -- Otherwise we could be discarding an exception.
-    forceError e (BlockedFetch _ rvar) =
+    forceError e (BlockedFetch _ _ rvar) =
       putResult rvar (except e)
 
 
@@ -461,8 +463,8 @@ wrapFetchInStats !statsRef dataSource batchSize perform = do
       postAlloc <- getAllocationCounter
       return (t0,t, fromIntegral $ prevAlloc - postAlloc, a)
 
-    addTimer t0 (BlockedFetch req (ResultVar fn)) =
-      BlockedFetch req $ ResultVar $ \result isChildThread -> do
+    addTimer t0 (BlockedFetch necessary req (ResultVar fn)) =
+      BlockedFetch necessary req $ ResultVar $ \result isChildThread -> do
         t1 <- getTimestamp
         updateFetchStats t0 (t1 - t0)
           0 -- allocs: we can't measure this easily for BackgroundFetch
@@ -482,8 +484,8 @@ wrapFetchInStats !statsRef dataSource batchSize perform = do
       atomicModifyIORef' statsRef $ \(Stats fs) -> (Stats (this : fs), ())
 
     addFailureCount :: IORef Int -> BlockedFetch r -> BlockedFetch r
-    addFailureCount ref (BlockedFetch req (ResultVar fn)) =
-      BlockedFetch req $ ResultVar $ \result isChildThread -> do
+    addFailureCount ref (BlockedFetch necessary req (ResultVar fn)) =
+      BlockedFetch necessary req $ ResultVar $ \result isChildThread -> do
         when (isLeft result) $ atomicModifyIORef' ref (\r -> (r+1,()))
         fn result isChildThread
 
