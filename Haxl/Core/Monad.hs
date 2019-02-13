@@ -633,20 +633,20 @@ instance Applicative (GenHaxl u) where
 -- The first was slightly faster according to tests/MonadBench.hs.
 
 instance Selective (GenHaxl u) where
-  select (GenHaxl a) (GenHaxl b) = GenHaxl $ \env@Env{..} -> do
+  select (GenHaxl x) (GenHaxl f) = GenHaxl $ \env@Env{..} -> do
     let !senv = speculate env
-    ra <- a env
-    case ra of
+    rx <- x env -- non speculative
+    case rx of
       Done (Right b) -> return (Done b)
-      Done (Left  a) -> unHaxl (($a) <$> GenHaxl b) env
+      Done (Left  a) -> unHaxl (($a) <$> GenHaxl f) env
       Throw e -> return (Throw e)
 
-      Blocked ia a' -> do
-        rb <- b senv
-        case rb of
-          Done f  -> unHaxl (either f id <$> GenHaxl a) env
+      Blocked ix x' -> do
+        rf <- f senv -- speculative
+        case rf of
+          Done f  -> unHaxl (either f id <$> GenHaxl x) env
           Throw e -> return (Throw e)
-          Blocked _ b' -> return (Blocked ia (Cont (toHaxl a' `select` toHaxl b')))
+          Blocked _ f' -> return (Blocked ix (Cont (toHaxl x' `select` toHaxl f')))
 
 -- -----------------------------------------------------------------------------
 -- Env utils
