@@ -57,6 +57,8 @@ GenHaxl a `pOr` GenHaxl b = GenHaxl $ \env@Env{..} -> do
           -- but handling this non-determinism would involve a much
           -- more complicated implementation here.
 
+
+
 -- | Parallel version of '(.&&)'.  Both arguments are evaluated in
 -- parallel, and if either returns 'False' then the other is
 -- not evaluated any further.

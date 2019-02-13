@@ -196,8 +196,9 @@ dataFetchWithInsert showFn insertFn req =
           -- add the request to the RequestStore and continue
           modifyIORef' reqStoreRef $ \bs ->
             addRequest (BlockedFetch necessary req rvar) bs
-      --
+      -- Add the cost of the request here
       return $ Blocked ivar (Cont (getIVar ivar))
+
 
     -- Seen before but not fetched yet.  We're blocked, but we don't have
     -- to add the request to the RequestStore.

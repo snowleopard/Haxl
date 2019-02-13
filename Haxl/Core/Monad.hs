@@ -49,6 +49,8 @@ module Haxl.Core.Monad
   , Selective (..)
   , branch
   , ifS
+  , selectA
+  , selectM
 
     -- * IVar
   , IVar(..)
@@ -462,7 +464,7 @@ allocation limit itself, and changing the counter would mess it up.
 data Result u a
   = Done a
   | Throw SomeException
-  | forall b . Blocked
+  | forall b . Blocked -- Add an Int field with the cost
       {-# UNPACK #-} !(IVar u b)
       (Cont u a)
          -- ^ The 'IVar' is what we are blocked on; 'Cont' is the
@@ -571,6 +573,15 @@ infixl 4 <*?
 selectA :: Applicative f => f (Either a b) -> f (a -> b) -> f b
 selectA x f = (\e f -> either f id e) <$> x <*> f
 
+-- | One can easily implement a monadic 'selectM' that satisfies the laws,
+-- hence any 'Monad' is 'Selective'.
+selectM :: Monad f => f (Either a b) -> f (a -> b) -> f b
+selectM mx mf = do
+    x <- mx
+    case x of
+        Left  a -> fmap ($a) mf
+        Right b -> pure b
+
 -- | The 'branch' function is a natural generalisation of 'select': instead of
 -- skipping an unnecessary effect, it chooses which of the two given effectful
 -- functions to apply to a given argument; the other effect is unnecessary. It
@@ -667,66 +678,20 @@ instance Applicative (GenHaxl u) where
 -- The first was slightly faster according to tests/MonadBench.hs.
 
 instance Selective (GenHaxl u) where
-  select (GenHaxl xx) (GenHaxl ff) = GenHaxl $ \env -> do
-    xr <- xx env
-    case xr of
-      Done (Right b) -> trace_ "S/Done/Right" $ return (Done b) -- skip ff
-      Done (Left  a) -> trace_ "S/Done/Left"  $ unHaxl (GenHaxl ff <*> pure a) env
+  select (GenHaxl a) (GenHaxl b) = GenHaxl $ \env@Env{..} -> do
+    let !senv = speculate env
+    ra <- a env
+    case ra of
+      Done (Right b) -> return (Done b)
+      Done (Left  a) -> unHaxl (($a) <$> GenHaxl b) env
+      Throw e -> return (Throw e)
 
-      Throw e -> trace_ "Throw" $ return (Throw e)
-
-      Blocked ivar1 xcont -> do
-        fr <- ff env
-        case fr of
-          Done f -> trace_ "S/Blocked/Done" $
-            return (Blocked ivar1 (either f id :<$> xcont))
-          Throw e -> trace_ "S/Blocked/Throw" $
-             return (Blocked ivar1 (xcont :>>= (\_ -> throw e)))
-          Blocked _ _fcont -> trace_ "S/Blocked/Blocked" $ do
-              -- Note [TODO]
-            --   if speculative env /= 0 -- Why do we have this suboptimal branch?
-            --     then
-            --       return (Blocked ivar1
-            --                 (Cont (select (toHaxl xcont) (toHaxl fcont))))
-            --     else do
-                  let res = fmap rightToMaybe (GenHaxl xx)    -- hoping for Right
-                                   `pOrElse`
-                            selectA (GenHaxl xx) (GenHaxl ff) -- fallback to Left
-                  unHaxl res env
-
-rightToMaybe :: Either a b -> Maybe b
-rightToMaybe (Left  _) = Nothing
-rightToMaybe (Right b) = Just b
-
--- | Given two Haxl computations, evaluate them in parallel. If the first one
--- finishes with @Nothing@, use the result produced by the second argument.
--- Otherwise, if the first one finishes with @Just result@, the @result@ is
--- returned immediately, and the other one is not evaluated any further.
---
--- WARNING: exceptions may be unpredictable when using 'pOrElse'. If the first
--- argument returns @Just result@ before the other completes, then 'pOrElse'
--- returns the @result@ immediately, ignoring a possible exception that the
--- other argument may have produced if it had been allowed to complete.
-pOrElse :: GenHaxl u (Maybe a) -> GenHaxl u a -> GenHaxl u a
-pOrElse (GenHaxl ma) (GenHaxl a) = GenHaxl $ \env@Env{..} -> do
-  let !senv = speculate env
-  rma <- ma env -- not speculative, since we know that all effects on the left
-  case rma of
-    Done (Just a) -> return (Done a)
-    Done Nothing  -> a env  -- not speculative
-    Throw e -> return (Throw e)
-    Blocked ima ma' -> do
-      ra <- a senv -- speculative
-      case ra of
-        Done  _ -> return ra
-        Throw _ -> return ra
-        Blocked _ a' -> return (Blocked ima (Cont (toHaxl ma' `pOrElse` toHaxl a')))
-          -- Note [pOrElse Blocked/Blocked]
-          -- This will only wake up when ima is filled, which
-          -- is whatever the left side (ma) was waiting for. Unlike in the case
-          -- of 'pOr' (see Note [pOr Blocked/Blocked]), this *is* optimal since
-          -- the semantics of 'pOrElse' is that the left side always needs to
-          -- be completed.
+      Blocked ia a' -> do
+        rb <- b senv
+        case rb of
+          Done f  -> unHaxl (either f id <$> GenHaxl a) env
+          Throw e -> return (Throw e)
+          Blocked _ b' -> return (Blocked ia (Cont (toHaxl a' `select` toHaxl b')))
 
 -- -----------------------------------------------------------------------------
 -- Env utils
