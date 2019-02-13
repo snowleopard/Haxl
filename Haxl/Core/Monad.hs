@@ -51,6 +51,8 @@ module Haxl.Core.Monad
   , ifS
   , selectA
   , selectM
+  , (<||>)
+  , (<&&>)
 
     -- * IVar
   , IVar(..)
@@ -593,6 +595,14 @@ branch x l r = fmap (fmap Left) x <*? fmap (fmap Right) l <*? r
 -- | Branch on a Boolean value, skipping unnecessary effects.
 ifS :: Selective f => f Bool -> f a -> f a -> f a
 ifS i t e = branch (bool (Right ()) (Left ()) <$> i) (const <$> t) (const <$> e)
+
+-- | A lifted version of lazy Boolean OR.
+(<||>) :: Selective f => f Bool -> f Bool -> f Bool
+(<||>) a b = ifS a (pure True) b
+
+-- | A lifted version of lazy Boolean AND.
+(<&&>) :: Selective f => f Bool -> f Bool -> f Bool
+(<&&>) a b = ifS a b (pure False)
 
 -- -----------------------------------------------------------------------------
 -- Monad/Applicative instances
