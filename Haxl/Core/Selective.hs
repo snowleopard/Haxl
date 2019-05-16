@@ -7,6 +7,7 @@ module Haxl.Core.Selective
     -- * Selective functors
     Selective (..)
   , branch
+  , race
   , ifS
   , selectA
   , selectM
@@ -15,16 +16,30 @@ module Haxl.Core.Selective
   ) where
 
 import Data.Bool
+import Data.Void
 
 -- -----------------------------------------------------------------------------
 -- Selective applicative functors
 
--- | Selective applicative functors. You can think of 'select' as a selective
--- function application: when given a value of type @Left a@, you __must apply__
--- the given function, but when given a @Right b@, you __may skip__ the function
--- and associated effects, and simply return the @b@.
+-- | Selective applicative functors.
+-- See https://www.staff.ncl.ac.uk/andrey.mokhov/selective-functors.pdf.
 class Applicative f => Selective f where
-    select :: f (Either a b) -> f (a -> b) -> f b
+    biselect :: f (Either a b) -> f (Either a c) -> f (Either a (b, c))
+
+(?*?) :: Selective f => f (Either a b) -> f (Either a c) -> f (Either a (b, c))
+(?*?) = biselect
+
+select :: Selective f => f (Either a b) -> f (a -> b) -> f b
+select x y = either id (\(a, f) -> f a) <$> (fmap swapEither x ?*? fmap Right y)
+
+-- | Swap @Left@ and @Right@.
+swapEither :: Either a b -> Either b a
+swapEither = either Right Left
+
+-- | Pick one of the values according to the semantics of the Selective
+-- instance. This is a semigroup due to the associativity of 'biselect'.
+race :: Selective f => f a -> f a -> f a
+race x y = either id (absurd . fst) <$> (fmap Left x ?*? fmap Left y)
 
 -- | An operator alias for 'select', which is sometimes convenient. It tries to
 -- follow the notational convention for 'Applicative' operators. The angle
@@ -60,12 +75,20 @@ branch x l r = fmap (fmap Left) x <*? fmap (fmap Right) l <*? r
 
 -- | Branch on a Boolean value, skipping unnecessary effects.
 ifS :: Selective f => f Bool -> f a -> f a -> f a
-ifS i t e = branch (bool (Right ()) (Left ()) <$> i) (const <$> t) (const <$> e)
+ifS i t e = branch (boolToEither <$> i) (const <$> t) (const <$> e)
+  where
+    boolToEither = bool (Right ()) (Left ())
 
 -- | A lifted version of lazy Boolean OR.
 (<||>) :: Selective f => f Bool -> f Bool -> f Bool
-(<||>) a b = ifS a (pure True) b
+(<||>) x y = either (const True) (const False) <$>
+    biselect (boolToEither <$> x) (boolToEither <$> y)
+  where
+    boolToEither = bool (Right ()) (Left ())
 
 -- | A lifted version of lazy Boolean AND.
 (<&&>) :: Selective f => f Bool -> f Bool -> f Bool
-(<&&>) a b = ifS a b (pure False)
+(<&&>) x y = either (const False) (const True) <$>
+    biselect (boolToEither <$> x) (boolToEither <$> y)
+  where
+    boolToEither = bool (Left ()) (Right ())
