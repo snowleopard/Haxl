@@ -9,8 +9,6 @@ module Haxl.Core.Selective
   , branch
   , race
   , ifS
-  , selectA
-  , selectM
   , (<||>)
   , (<&&>)
   ) where
@@ -23,23 +21,22 @@ import Data.Void
 
 -- | Selective applicative functors.
 -- See https://www.staff.ncl.ac.uk/andrey.mokhov/selective-functors.pdf.
+--
+-- This instance uses a "curried" version of the 'biselect' from the paper.
 class Applicative f => Selective f where
-    biselect :: f (Either a b) -> f (Either a c) -> f (Either a (b, c))
-
-(?*?) :: Selective f => f (Either a b) -> f (Either a c) -> f (Either a (b, c))
-(?*?) = biselect
+    biselect :: f (Either a (b -> c)) -> f (Either a b) -> f (Either a c)
 
 select :: Selective f => f (Either a b) -> f (a -> b) -> f b
-select x y = either id (\(a, f) -> f a) <$> (fmap swapEither x ?*? fmap Right y)
-
--- | Swap @Left@ and @Right@.
-swapEither :: Either a b -> Either b a
-swapEither = either Right Left
+select x y = either id id <$> biselect (adjust <$> x) (Right <$> y)
+  where
+    adjust :: Either a b -> Either b ((a -> b) -> b)
+    adjust (Left  a) = Right ($a)
+    adjust (Right b) = Left b
 
 -- | Pick one of the values according to the semantics of the Selective
--- instance. This is a semigroup due to the associativity of 'biselect'.
+-- instance. This is a semigroup as long as the arguments yeild the same values.
 race :: Selective f => f a -> f a -> f a
-race x y = either id (absurd . fst) <$> (fmap Left x ?*? fmap Left y)
+race x y = either id absurd <$> biselect (Left <$> x) (Left <$> y)
 
 -- | An operator alias for 'select', which is sometimes convenient. It tries to
 -- follow the notational convention for 'Applicative' operators. The angle
@@ -49,21 +46,6 @@ race x y = either id (absurd . fst) <$> (fmap Left x ?*? fmap Left y)
 (<*?) = select
 
 infixl 4 <*?
-
--- | We can write a function with the type signature of 'select' using the
--- 'Applicative' type class, but it will always execute the effects associated
--- with the second argument, hence being potentially less efficient.
-selectA :: Applicative f => f (Either a b) -> f (a -> b) -> f b
-selectA x f = (\e f -> either f id e) <$> x <*> f
-
--- | One can easily implement a monadic 'selectM' that satisfies the laws,
--- hence any 'Monad' is 'Selective'.
-selectM :: Monad f => f (Either a b) -> f (a -> b) -> f b
-selectM mx mf = do
-    x <- mx
-    case x of
-        Left  a -> fmap ($a) mf
-        Right b -> pure b
 
 -- | The 'branch' function is a natural generalisation of 'select': instead of
 -- skipping an unnecessary effect, it chooses which of the two given effectful
@@ -82,13 +64,15 @@ ifS i t e = branch (boolToEither <$> i) (const <$> t) (const <$> e)
 -- | A lifted version of lazy Boolean OR.
 (<||>) :: Selective f => f Bool -> f Bool -> f Bool
 (<||>) x y = either (const True) (const False) <$>
-    biselect (boolToEither <$> x) (boolToEither <$> y)
+    biselect (boolToEitherX <$> x) (boolToEitherY <$> y)
   where
-    boolToEither = bool (Right ()) (Left ())
+    boolToEitherX = bool (Right id) (Left ())
+    boolToEitherY = bool (Right ()) (Left ())
 
 -- | A lifted version of lazy Boolean AND.
 (<&&>) :: Selective f => f Bool -> f Bool -> f Bool
 (<&&>) x y = either (const False) (const True) <$>
-    biselect (boolToEither <$> x) (boolToEither <$> y)
+    biselect (boolToEitherX <$> x) (boolToEitherY <$> y)
   where
-    boolToEither = bool (Left ()) (Right ())
+    boolToEitherX = bool (Left ()) (Right id)
+    boolToEitherY = bool (Left ()) (Right ())

@@ -49,8 +49,6 @@ module Haxl.Core.Monad
   , Selective (..)
   , branch
   , ifS
-  , selectA
-  , selectM
   , (<||>)
   , (<&&>)
 
@@ -637,15 +635,15 @@ instance Selective (GenHaxl u) where
     let !senv = speculate env
     rx <- x env -- non speculative
     case rx of
-      Done (Left  a) -> return (Done (Left a))
-      Done (Right b) -> unHaxl (fmap (b,) <$> GenHaxl y) env
+      Done (Left  a ) -> return (Done (Left a))
+      Done (Right bc) -> unHaxl (fmap bc <$> GenHaxl y) env
       Throw e -> return (Throw e)
 
       Blocked ix x' -> do
         ry <- y senv -- speculative
         case ry of
           Done (Left  a) -> return (Done (Left a))
-          Done (Right c) -> unHaxl (fmap (,c) <$> GenHaxl x) env
+          Done (Right b) -> unHaxl (fmap ($b) <$> GenHaxl x) env
           Throw e -> return (Throw e)
           Blocked _ y' -> return (Blocked ix (Cont (toHaxl x' `biselect` toHaxl y')))
           -- Note [biselect Blocked/Blocked]
