@@ -14,7 +14,6 @@ module Haxl.Core.Selective
   ) where
 
 import Data.Bool
-import Data.Void
 
 -- -----------------------------------------------------------------------------
 -- Selective applicative functors
@@ -24,19 +23,15 @@ import Data.Void
 --
 -- This instance uses a "curried" version of the 'biselect' from the paper.
 class Applicative f => Selective f where
-    biselect :: f (Either a (b -> c)) -> f (Either a b) -> f (Either a c)
+    biselect :: (a -> Either c (d -> c)) -> (b -> Either c d) -> f a -> f b -> f c
 
 select :: Selective f => f (Either a b) -> f (a -> b) -> f b
-select x y = either id id <$> biselect (adjust <$> x) (Right <$> y)
-  where
-    adjust :: Either a b -> Either b ((a -> b) -> b)
-    adjust (Left  a) = Right ($a)
-    adjust (Right b) = Left b
+select x y = biselect (either (Right . (flip ($))) Left) Right x y
 
 -- | Pick one of the values according to the semantics of the Selective
 -- instance. This is a semigroup as long as the arguments yeild the same values.
 race :: Selective f => f a -> f a -> f a
-race x y = either id absurd <$> biselect (Left <$> x) (Left <$> y)
+race = biselect Left Left
 
 -- | An operator alias for 'select', which is sometimes convenient. It tries to
 -- follow the notational convention for 'Applicative' operators. The angle
@@ -63,16 +58,18 @@ ifS i t e = branch (boolToEither <$> i) (const <$> t) (const <$> e)
 
 -- | A lifted version of lazy Boolean OR.
 (<||>) :: Selective f => f Bool -> f Bool -> f Bool
-(<||>) x y = either (const True) (const False) <$>
-    biselect (boolToEitherX <$> x) (boolToEitherY <$> y)
+(<||>) x y = biselect f g x y
   where
-    boolToEitherX = bool (Right id) (Left ())
-    boolToEitherY = bool (Right ()) (Left ())
+    f :: Bool -> Either Bool (Bool -> Bool)
+    f x = if x then Left True else Right id
+    g :: Bool -> Either Bool Bool
+    g x = if x then Left True else Right False
 
 -- | A lifted version of lazy Boolean AND.
 (<&&>) :: Selective f => f Bool -> f Bool -> f Bool
-(<&&>) x y = either (const False) (const True) <$>
-    biselect (boolToEitherX <$> x) (boolToEitherY <$> y)
+(<&&>) x y = biselect f g x y
   where
-    boolToEitherX = bool (Left ()) (Right id)
-    boolToEitherY = bool (Left ()) (Right ())
+    f :: Bool -> Either Bool (Bool -> Bool)
+    f x = if x then Right id else Left False
+    g :: Bool -> Either Bool Bool
+    g x = if x then Right True else Left False

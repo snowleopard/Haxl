@@ -631,21 +631,23 @@ instance Applicative (GenHaxl u) where
 -- The first was slightly faster according to tests/MonadBench.hs.
 
 instance Selective (GenHaxl u) where
-  biselect (GenHaxl x) (GenHaxl y) = GenHaxl $ \env@Env{..} -> do
+  biselect f g (GenHaxl x) (GenHaxl y) = GenHaxl $ \env@Env{..} -> do
     let !senv = speculate env
     rx <- x env -- non speculative
     case rx of
-      Done (Left  a ) -> return (Done (Left a))
-      Done (Right bc) -> unHaxl (fmap bc <$> GenHaxl y) env
+      Done a -> case f a of
+        Left   c -> return (Done c)
+        Right dc -> unHaxl ((either id dc . g) <$> GenHaxl y) env
       Throw e -> return (Throw e)
 
       Blocked ix x' -> do
         ry <- y senv -- speculative
         case ry of
-          Done (Left  a) -> return (Done (Left a))
-          Done (Right b) -> unHaxl (fmap ($b) <$> GenHaxl x) env
+          Done b -> case g b of
+            Left  c -> return (Done c)
+            Right d -> unHaxl ((either id ($d) . f) <$> GenHaxl x) env
           Throw e -> return (Throw e)
-          Blocked _ y' -> return (Blocked ix (Cont (toHaxl x' `biselect` toHaxl y')))
+          Blocked _ y' -> return (Blocked ix (Cont (biselect f g (toHaxl x') (toHaxl y'))))
           -- Note [biselect Blocked/Blocked]
           -- This will only wake up when ia is filled, which
           -- is whatever the left side was waiting for.  This is
