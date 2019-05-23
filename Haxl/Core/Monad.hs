@@ -51,6 +51,8 @@ module Haxl.Core.Monad
   , ifS
   , (<||>)
   , (<&&>)
+  , pOrOld
+  , pAndOld
 
     -- * IVar
   , IVar(..)
@@ -799,3 +801,44 @@ dumpCacheAsHaskellFn fnName fnType = do
     text (fnName ++ " = do") $$
       nest 2 body $$
     text "" -- final newline
+
+-- Old implementations of pOr and pAnd, for performance analysis
+pOrOld :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
+GenHaxl a `pOrOld` GenHaxl b = GenHaxl $ \env@Env{..} -> do
+  let !senv = speculate env
+  ra <- a senv
+  case ra of
+    Done True -> return (Done True)
+    Done False -> b env  -- not speculative
+    Throw _ -> return ra
+    Blocked ia a' -> do
+      rb <- b senv
+      case rb of
+        Done True -> return rb
+        Done False -> return ra
+        Throw _ -> return rb
+        Blocked _ b' -> return (Blocked ia (Cont (toHaxl a' `pOrOld` toHaxl b')))
+          -- Note [pOr Blocked/Blocked]
+          -- This will only wake up when ia is filled, which
+          -- is whatever the left side was waiting for.  This is
+          -- suboptimal because the right side might wake up first,
+          -- but handling this non-determinism would involve a much
+          -- more complicated implementation here.
+
+
+pAndOld :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
+GenHaxl a `pAndOld` GenHaxl b = GenHaxl $ \env@Env{..} -> do
+  let !senv = speculate env
+  ra <- a senv
+  case ra of
+    Done False -> return (Done False)
+    Done True -> b env
+    Throw _ -> return ra
+    Blocked ia a' -> do
+      rb <- b senv
+      case rb of
+        Done False -> return rb
+        Done True -> return ra
+        Throw _ -> return rb
+        Blocked _ b' -> return (Blocked ia (Cont (toHaxl a' `pAndOld` toHaxl b')))
+         -- See Note [pOr Blocked/Blocked]
