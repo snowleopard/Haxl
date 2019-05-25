@@ -834,7 +834,7 @@ GenHaxl a `pOrOld` GenHaxl b = GenHaxl $ \env@Env{..} -> do
           -- is whatever the left side was waiting for.  This is
           -- suboptimal because the right side might wake up first,
           -- but handling this non-determinism would involve a much
--- more complicated implementation here.
+          -- more complicated implementation here.
 
 pAndOld :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
 GenHaxl a `pAndOld` GenHaxl b = GenHaxl $ \env@Env{..} -> do
