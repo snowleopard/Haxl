@@ -9,8 +9,6 @@ module Haxl.Core.Selective
   , branch
   , race
   , ifS
-  , (<||>)
-  , (<&&>)
   ) where
 
 import Data.Bool
@@ -24,6 +22,26 @@ import Data.Bool
 -- This instance uses a "curried" version of the 'biselect' from the paper.
 class Applicative f => Selective f where
     biselect :: (a -> Either c (d -> c)) -> (b -> Either c d) -> f a -> f b -> f c
+
+    -- | A lifted version of lazy Boolean OR.
+    (<||>) :: f Bool -> f Bool -> f Bool
+    (<||>) x y = biselect f g x y
+      where
+        f :: Bool -> Either Bool (Bool -> Bool)
+        f x = if x then Left True else Right id
+        g :: Bool -> Either Bool Bool
+        g x = if x then Left True else Right False
+    {-# INLINEABLE (<||>) #-}
+
+    -- | A lifted version of lazy Boolean AND.
+    (<&&>) :: f Bool -> f Bool -> f Bool
+    (<&&>) x y = biselect f g x y
+      where
+        f :: Bool -> Either Bool (Bool -> Bool)
+        f x = if x then Right id else Left False
+        g :: Bool -> Either Bool Bool
+        g x = if x then Right True else Left False
+    {-# INLINEABLE (<&&>) #-}
 
 select :: Selective f => f (Either a b) -> f (a -> b) -> f b
 select x y = biselect (either (Right . (flip ($))) Left) Right x y
@@ -55,21 +73,3 @@ ifS :: Selective f => f Bool -> f a -> f a -> f a
 ifS i t e = branch (boolToEither <$> i) (const <$> t) (const <$> e)
   where
     boolToEither = bool (Right ()) (Left ())
-
--- | A lifted version of lazy Boolean OR.
-(<||>) :: Selective f => f Bool -> f Bool -> f Bool
-(<||>) x y = biselect f g x y
-  where
-    f :: Bool -> Either Bool (Bool -> Bool)
-    f x = if x then Left True else Right id
-    g :: Bool -> Either Bool Bool
-    g x = if x then Left True else Right False
-
--- | A lifted version of lazy Boolean AND.
-(<&&>) :: Selective f => f Bool -> f Bool -> f Bool
-(<&&>) x y = biselect f g x y
-  where
-    f :: Bool -> Either Bool (Bool -> Bool)
-    f x = if x then Right id else Left False
-    g :: Bool -> Either Bool Bool
-    g x = if x then Right True else Left False

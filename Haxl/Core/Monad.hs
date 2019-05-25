@@ -49,8 +49,6 @@ module Haxl.Core.Monad
   , Selective (..)
   , branch
   , ifS
-  , (<||>)
-  , (<&&>)
   , pOrOld
   , pAndOld
 
@@ -568,13 +566,21 @@ instance Monad (GenHaxl u) where
   (>>) = (*>)
 
 instance Functor (GenHaxl u) where
-  fmap f (GenHaxl m) = GenHaxl $ \env -> do
-    r <- m env
-    case r of
-      Done a -> return (Done (f a))
-      Throw e -> return (Throw e)
-      Blocked ivar cont -> trace_ "fmap Blocked" $
-        return (Blocked ivar (f :<$> cont))
+  fmap = fmapGenHaxl
+
+fmapGenHaxl :: (a -> b) -> GenHaxl t a -> GenHaxl t b
+fmapGenHaxl f (GenHaxl m) = GenHaxl $ \env -> do
+  r <- m env
+  case r of
+    Done a -> return (Done (f a))
+    Throw e -> return (Throw e)
+    Blocked ivar cont -> trace_ "fmap Blocked" $
+      return (Blocked ivar (f :<$> cont))
+{-# INLINE [1] fmapGenHaxl #-}
+{-# RULES
+"fmapGenHaxl/id"
+  fmapGenHaxl (\x -> x) = id
+ #-}
 
 instance Applicative (GenHaxl u) where
   pure = return
@@ -633,7 +639,11 @@ instance Applicative (GenHaxl u) where
 -- The first was slightly faster according to tests/MonadBench.hs.
 
 instance Selective (GenHaxl u) where
-  biselect f g (GenHaxl x) (GenHaxl y) = GenHaxl $ \env@Env{..} -> do
+  {-# INLINEABLE biselect #-}
+  biselect = biselectGenHaxl
+
+biselectGenHaxl :: (t -> Either a1 (b -> a1)) -> (a -> Either a1 b) -> GenHaxl u t -> GenHaxl u a -> GenHaxl u a1
+biselectGenHaxl f g (GenHaxl x) (GenHaxl y) = GenHaxl $ \env@Env{..} -> do
     let !senv = speculate env
     rx <- x env -- non speculative
     case rx of
@@ -656,6 +666,7 @@ instance Selective (GenHaxl u) where
           -- suboptimal because the right side might wake up first,
           -- but handling this non-determinism would involve a much
           -- more complicated implementation here.
+{-# INLINE biselectGenHaxl #-}
 
 -- -----------------------------------------------------------------------------
 -- Env utils
@@ -823,8 +834,7 @@ GenHaxl a `pOrOld` GenHaxl b = GenHaxl $ \env@Env{..} -> do
           -- is whatever the left side was waiting for.  This is
           -- suboptimal because the right side might wake up first,
           -- but handling this non-determinism would involve a much
-          -- more complicated implementation here.
-
+-- more complicated implementation here.
 
 pAndOld :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
 GenHaxl a `pAndOld` GenHaxl b = GenHaxl $ \env@Env{..} -> do
