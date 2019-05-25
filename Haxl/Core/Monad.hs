@@ -643,7 +643,11 @@ instance Selective (GenHaxl u) where
   biselect = biselectGenHaxl
 
 biselectGenHaxl :: (t -> Either a1 (b -> a1)) -> (a -> Either a1 b) -> GenHaxl u t -> GenHaxl u a -> GenHaxl u a1
-biselectGenHaxl f g (GenHaxl x) (GenHaxl y) = GenHaxl $ \env@Env{..} -> do
+biselectGenHaxl f g x y = GenHaxl (biselectInner f g x y)
+{-# INLINE biselectGenHaxl #-}
+
+biselectInner :: (t -> Either a1 (b -> a1)) -> (a -> Either a1 b) -> GenHaxl u t -> GenHaxl u a -> Env u -> IO (Result u a1)
+biselectInner f g (GenHaxl x) (GenHaxl y) env@Env{..} = do
     let !senv = speculate env
     rx <- x env -- non speculative
     case rx of
@@ -666,7 +670,7 @@ biselectGenHaxl f g (GenHaxl x) (GenHaxl y) = GenHaxl $ \env@Env{..} -> do
           -- suboptimal because the right side might wake up first,
           -- but handling this non-determinism would involve a much
           -- more complicated implementation here.
-{-# INLINE biselectGenHaxl #-}
+{-# INLINE biselectInner #-}
 
 -- -----------------------------------------------------------------------------
 -- Env utils
