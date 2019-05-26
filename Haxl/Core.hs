@@ -98,7 +98,6 @@ import Haxl.Core.Flags
 import Haxl.Core.Memo
 import Haxl.Core.Monad hiding (unsafeLiftIO {- Ask nicely to get this! -})
 import Haxl.Core.Fetch
-import Haxl.Core.Parallel
 import Haxl.Core.Profile
 import Haxl.Core.Run
 import Haxl.Core.Stats

@@ -70,7 +70,6 @@ import Haxl.Core.Exception
 import Haxl.Core.Memo
 import Haxl.Core.Monad
 import Haxl.Core.Fetch
-import Haxl.Core.Parallel
 
 import Control.Applicative
 import Control.Monad (foldM, join, void)
