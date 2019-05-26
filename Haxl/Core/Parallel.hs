@@ -18,35 +18,3 @@ module Haxl.Core.Parallel
   ) where
 
 import Haxl.Core.Monad
-
--- -----------------------------------------------------------------------------
--- Parallel operations
-
--- Bind more tightly than .&&, .||
-infixr 5 `pAnd`
-infixr 4 `pOr`
-
--- | Parallel version of '(.||)'.  Both arguments are evaluated in
--- parallel, and if either returns 'True' then the other is
--- not evaluated any further.
---
--- WARNING: exceptions may be unpredictable when using 'pOr'.  If one
--- argument returns 'True' before the other completes, then 'pOr'
--- returns 'True' immediately, ignoring a possible exception that
--- the other argument may have produced if it had been allowed to
--- complete.
-pOr :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
-pOr = (<||>)
-
-
--- | Parallel version of '(.&&)'.  Both arguments are evaluated in
--- parallel, and if either returns 'False' then the other is
--- not evaluated any further.
---
--- WARNING: exceptions may be unpredictable when using 'pAnd'.  If one
--- argument returns 'False' before the other completes, then 'pAnd'
--- returns 'False' immediately, ignoring a possible exception that
--- the other argument may have produced if it had been allowed to
--- complete.
-pAnd :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
-pAnd = (<&&>)

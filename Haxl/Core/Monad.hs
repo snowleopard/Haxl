@@ -49,6 +49,10 @@ module Haxl.Core.Monad
   , Selective (..)
   , branch
   , ifS
+  , (<||>)
+  , (<&&>)
+  , pOr
+  , pAnd
   , pOrOld
   , pAndOld
 
@@ -640,11 +644,7 @@ instance Applicative (GenHaxl u) where
 
 instance Selective (GenHaxl u) where
   {-# INLINEABLE biselect #-}
-  biselect = biselectGenHaxl
-
-biselectGenHaxl :: (t -> Either a1 (b -> a1)) -> (a -> Either a1 b) -> GenHaxl u t -> GenHaxl u a -> GenHaxl u a1
-biselectGenHaxl f g x y = GenHaxl (biselectInner f g x y)
-{-# INLINE biselectGenHaxl #-}
+  biselect f g x y = GenHaxl (biselectInner f g x y)
 
 biselectInner :: (t -> Either a1 (b -> a1)) -> (a -> Either a1 b) -> GenHaxl u t -> GenHaxl u a -> Env u -> IO (Result u a1)
 biselectInner f g (GenHaxl x) (GenHaxl y) env@Env{..} = do
@@ -816,6 +816,38 @@ dumpCacheAsHaskellFn fnName fnType = do
     text (fnName ++ " = do") $$
       nest 2 body $$
     text "" -- final newline
+
+-- -----------------------------------------------------------------------------
+-- Parallel operations
+
+-- Bind more tightly than .&&, .||
+infixr 5 `pAnd`
+infixr 4 `pOr`
+
+-- | Parallel version of '(.||)'.  Both arguments are evaluated in
+-- parallel, and if either returns 'True' then the other is
+-- not evaluated any further.
+--
+-- WARNING: exceptions may be unpredictable when using 'pOr'.  If one
+-- argument returns 'True' before the other completes, then 'pOr'
+-- returns 'True' immediately, ignoring a possible exception that
+-- the other argument may have produced if it had been allowed to
+-- complete.
+pOr :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
+pOr x y = x <||> y
+
+
+-- | Parallel version of '(.&&)'.  Both arguments are evaluated in
+-- parallel, and if either returns 'False' then the other is
+-- not evaluated any further.
+--
+-- WARNING: exceptions may be unpredictable when using 'pAnd'.  If one
+-- argument returns 'False' before the other completes, then 'pAnd'
+-- returns 'False' immediately, ignoring a possible exception that
+-- the other argument may have produced if it had been allowed to
+-- complete.
+pAnd :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
+pAnd x y = x <&&> y
 
 -- Old implementations of pOr and pAnd, for performance analysis
 pOrOld :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
