@@ -647,29 +647,31 @@ instance Selective (GenHaxl u) where
   biselect f g x y = GenHaxl (biselectInner f g x y)
 
 biselectInner :: (t -> Either a1 (b -> a1)) -> (a -> Either a1 b) -> GenHaxl u t -> GenHaxl u a -> Env u -> IO (Result u a1)
-biselectInner f g (GenHaxl x) (GenHaxl y) env@Env{..} = do
-    let !senv = speculate env
-    rx <- x env -- non speculative
-    case rx of
-      Done a -> case f a of
-        Left   c -> return (Done c)
-        Right dc -> unHaxl ((either id dc . g) <$> GenHaxl y) env
-      Throw e -> return (Throw e)
+biselectInner f g = go
+  where
+    go (GenHaxl x) (GenHaxl y) env@Env{..} = do
+      let !senv = speculate env
+      rx <- x env -- non speculative
+      case rx of
+        Done a -> case f a of
+          Left   c -> return (Done c)
+          Right dc -> unHaxl ((either id dc . g) <$> GenHaxl y) env
+        Throw e -> return (Throw e)
 
-      Blocked ix x' -> do
-        ry <- y senv -- speculative
-        case ry of
-          Done b -> case g b of
-            Left  c -> return (Done c)
-            Right d -> unHaxl ((either id ($d) . f) <$> GenHaxl x) env
-          Throw e -> return (Throw e)
-          Blocked _ y' -> return (Blocked ix (Cont (biselect f g (toHaxl x') (toHaxl y'))))
-          -- Note [biselect Blocked/Blocked]
-          -- This will only wake up when ia is filled, which
-          -- is whatever the left side was waiting for.  This is
-          -- suboptimal because the right side might wake up first,
-          -- but handling this non-determinism would involve a much
-          -- more complicated implementation here.
+        Blocked ix x' -> do
+          ry <- y senv -- speculative
+          case ry of
+            Done b -> case g b of
+              Left  c -> return (Done c)
+              Right d -> unHaxl ((either id ($d) . f) <$> GenHaxl x) env
+            Throw e -> return (Throw e)
+            Blocked _ y' -> return (Blocked ix (Cont (GenHaxl (go (toHaxl x') (toHaxl y')))))
+            -- Note [biselect Blocked/Blocked]
+            -- This will only wake up when ia is filled, which
+            -- is whatever the left side was waiting for.  This is
+            -- suboptimal because the right side might wake up first,
+            -- but handling this non-determinism would involve a much
+            -- more complicated implementation here.
 {-# INLINE biselectInner #-}
 
 -- -----------------------------------------------------------------------------
