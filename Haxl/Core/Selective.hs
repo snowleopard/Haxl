@@ -23,7 +23,7 @@ import Data.Bool
 --
 -- This instance uses a "curried" version of the 'biselect' from the paper.
 class Applicative f => Selective f where
-    biselect :: (a -> Either c (d -> c)) -> (b -> Either c d) -> f a -> f b -> f c
+  biselect :: (a -> Either c (d -> c)) -> (b -> Either c d) -> f a -> f b -> f c
 
 select :: Selective f => f (Either a b) -> f (a -> b) -> f b
 select x y = biselect (either (Right . (flip ($))) Left) Right x y
@@ -64,6 +64,7 @@ ifS i t e = branch (boolToEither <$> i) (const <$> t) (const <$> e)
     f x = if x then Left True else Right id
     g :: Bool -> Either Bool Bool
     g x = if x then Left True else Right False
+{-# INLINE (<||>) #-}
 
 -- | A lifted version of lazy Boolean AND.
 (<&&>) :: Selective f => f Bool -> f Bool -> f Bool
@@ -73,3 +74,4 @@ ifS i t e = branch (boolToEither <$> i) (const <$> t) (const <$> e)
     f x = if x then Right id else Left False
     g :: Bool -> Either Bool Bool
     g x = if x then Right True else Left False
+{-# INLINE (<&&>) #-}

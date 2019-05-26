@@ -51,6 +51,8 @@ module Haxl.Core.Monad
   , ifS
   , (<||>)
   , (<&&>)
+  , pOr
+  , pAnd
   , pOrOld
   , pAndOld
 
@@ -568,13 +570,21 @@ instance Monad (GenHaxl u) where
   (>>) = (*>)
 
 instance Functor (GenHaxl u) where
-  fmap f (GenHaxl m) = GenHaxl $ \env -> do
-    r <- m env
-    case r of
-      Done a -> return (Done (f a))
-      Throw e -> return (Throw e)
-      Blocked ivar cont -> trace_ "fmap Blocked" $
-        return (Blocked ivar (f :<$> cont))
+  fmap = fmapGenHaxl
+
+fmapGenHaxl :: (a -> b) -> GenHaxl t a -> GenHaxl t b
+fmapGenHaxl f (GenHaxl m) = GenHaxl $ \env -> do
+  r <- m env
+  case r of
+    Done a -> return (Done (f a))
+    Throw e -> return (Throw e)
+    Blocked ivar cont -> trace_ "fmap Blocked" $
+      return (Blocked ivar (f :<$> cont))
+{-# INLINE [1] fmapGenHaxl #-}
+{-# RULES
+"fmapGenHaxl/id"
+  fmapGenHaxl (\x -> x) = id
+ #-}
 
 instance Applicative (GenHaxl u) where
   pure = return
@@ -633,7 +643,11 @@ instance Applicative (GenHaxl u) where
 -- The first was slightly faster according to tests/MonadBench.hs.
 
 instance Selective (GenHaxl u) where
-  biselect f g (GenHaxl x) (GenHaxl y) = GenHaxl $ \env@Env{..} -> do
+  {-# INLINEABLE biselect #-}
+  biselect f g x y = GenHaxl (biselectInner f g x y)
+
+biselectInner :: (t -> Either a1 (b -> a1)) -> (a -> Either a1 b) -> GenHaxl u t -> GenHaxl u a -> Env u -> IO (Result u a1)
+biselectInner f g (GenHaxl x) (GenHaxl y) env@Env{..} = do
     let !senv = speculate env
     rx <- x env -- non speculative
     case rx of
@@ -656,6 +670,7 @@ instance Selective (GenHaxl u) where
           -- suboptimal because the right side might wake up first,
           -- but handling this non-determinism would involve a much
           -- more complicated implementation here.
+{-# INLINE biselectInner #-}
 
 -- -----------------------------------------------------------------------------
 -- Env utils
@@ -802,6 +817,38 @@ dumpCacheAsHaskellFn fnName fnType = do
       nest 2 body $$
     text "" -- final newline
 
+-- -----------------------------------------------------------------------------
+-- Parallel operations
+
+-- Bind more tightly than .&&, .||
+infixr 5 `pAnd`
+infixr 4 `pOr`
+
+-- | Parallel version of '(.||)'.  Both arguments are evaluated in
+-- parallel, and if either returns 'True' then the other is
+-- not evaluated any further.
+--
+-- WARNING: exceptions may be unpredictable when using 'pOr'.  If one
+-- argument returns 'True' before the other completes, then 'pOr'
+-- returns 'True' immediately, ignoring a possible exception that
+-- the other argument may have produced if it had been allowed to
+-- complete.
+pOr :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
+pOr x y = x <||> y
+
+
+-- | Parallel version of '(.&&)'.  Both arguments are evaluated in
+-- parallel, and if either returns 'False' then the other is
+-- not evaluated any further.
+--
+-- WARNING: exceptions may be unpredictable when using 'pAnd'.  If one
+-- argument returns 'False' before the other completes, then 'pAnd'
+-- returns 'False' immediately, ignoring a possible exception that
+-- the other argument may have produced if it had been allowed to
+-- complete.
+pAnd :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
+pAnd x y = x <&&> y
+
 -- Old implementations of pOr and pAnd, for performance analysis
 pOrOld :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
 GenHaxl a `pOrOld` GenHaxl b = GenHaxl $ \env@Env{..} -> do
@@ -824,7 +871,6 @@ GenHaxl a `pOrOld` GenHaxl b = GenHaxl $ \env@Env{..} -> do
           -- suboptimal because the right side might wake up first,
           -- but handling this non-determinism would involve a much
           -- more complicated implementation here.
-
 
 pAndOld :: GenHaxl u Bool -> GenHaxl u Bool -> GenHaxl u Bool
 GenHaxl a `pAndOld` GenHaxl b = GenHaxl $ \env@Env{..} -> do
